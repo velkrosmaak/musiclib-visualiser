@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Music Library Visualiser</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Music Library Visualiser</h1>
+    <p>Interactive visualisations of genre statistics. Data is loaded from <code>../data/stats.json</code>.</p>
+  </header>
+  <main>
+    <section id="controls">
+      <label for="genre_select">Filter / Drill-down by genre:</label>
+      <select id="genre_select"><option value="__all__">All genres</option></select>
+      <div id="duration_bins" style="display:inline-block;margin-left:20px"></div>
+    </section>
+
+    <section id="genre_bar">
+      <h2>Genre counts (top 20)</h2>
+      <div id="barchart"></div>
+    </section>
+
+    <section id="artist_bar">
+      <h2>Top artists for selected genre</h2>
+      <div id="artistchart"></div>
+    </section>
+
+    <section id="year_hist">
+      <h2>Tracks by Year</h2>
+      <div id="yearhist"></div>
+    </section>
+
+    <section id="summary">
+      <h2>Summary</h2>
+      <pre id="summarytext"></pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
