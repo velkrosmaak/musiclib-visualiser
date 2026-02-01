@@ -268,18 +268,53 @@ def main():
 
     args = parser.parse_args()
 
-    start = datetime.now()
-    md = run_scan(args.root, workers=args.workers)
-
-    stats = analyze(md)
-
-    # Hardcode output dir and always serve
+    # Hardcode output dir and optionally use existing data
     output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'web', 'data'))
-    save_json({'files': md}, os.path.join(output_dir, 'files.json'))
-    save_json({'stats': stats}, os.path.join(output_dir, 'stats.json'))
+    files_path = os.path.join(output_dir, 'files.json')
+    stats_path = os.path.join(output_dir, 'stats.json')
 
-    print(f"Scan and analysis complete in {datetime.now() - start}")
-    print(f"Wrote stats to {os.path.join(output_dir, 'stats.json')}")
+    md = None
+    stats = None
+
+    if os.path.exists(files_path) and os.path.exists(stats_path):
+        resp = input(f"Found existing data in {output_dir}. Scan again? [y/N]: ").strip().lower()
+        do_scan = resp in ('y', 'yes')
+    else:
+        do_scan = True
+
+    if do_scan:
+        start = datetime.now()
+        md = run_scan(args.root, workers=args.workers)
+        stats = analyze(md)
+        # Save outputs
+        save_json({'files': md}, files_path)
+        save_json({'stats': stats}, stats_path)
+        print(f"Scan and analysis complete in {datetime.now() - start}")
+        print(f"Wrote stats to {stats_path}")
+    else:
+        print("Using existing stats, skipping scan.")
+        try:
+            with open(stats_path, 'r', encoding='utf-8') as fh:
+                loaded = json.load(fh)
+                stats = loaded.get('stats', loaded)
+        except Exception as e:
+            print(f"Failed to read existing stats: {e}")
+            print("Falling back to scanning.")
+            start = datetime.now()
+            md = run_scan(args.root, workers=args.workers)
+            stats = analyze(md)
+            save_json({'files': md}, files_path)
+            save_json({'stats': stats}, stats_path)
+            print(f"Scan and analysis complete in {datetime.now() - start}")
+            print(f"Wrote stats to {stats_path}")
+
+        try:
+            with open(files_path, 'r', encoding='utf-8') as fh:
+                loaded = json.load(fh)
+                md = loaded.get('files', loaded)
+        except Exception as e:
+            print(f"Failed to read existing files list: {e}")
+            md = []
 
     # Always start the simple HTTP server to preview the D3 visualisation
     web_root = os.path.abspath(os.path.join(os.path.dirname(__file__), 'web'))
@@ -287,7 +322,7 @@ def main():
     os.chdir(web_root)
     try:
         from http.server import SimpleHTTPRequestHandler, HTTPServer
-        server = HTTPServer(('localhost', 8000), SimpleHTTPRequestHandler)
+        server = HTTPServer(('0.0.0.0', 8000), SimpleHTTPRequestHandler)
         server.serve_forever()
     except KeyboardInterrupt:
         print('\nServer stopped')
