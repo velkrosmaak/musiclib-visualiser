@@ -20,17 +20,40 @@ header p { color: var(--muted); }
 main { max-width: 1200px; margin: 18px auto; }
 section { margin-bottom: 20px; }
 
-/* Panels */
-#barchart svg, #artistchart svg, #durhist svg, #genrepie svg, #genreradar svg, #yearhist svg, #timeline svg {
-  background: var(--panel);
+/* Modern card panels */
+.panel {
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: 0 6px 20px rgba(2,6,23,0.55);
   border: 1px solid rgba(255,255,255,0.03);
-  box-shadow: 0 6px 18px rgba(2,6,23,0.6);
+}
+
+section h2 { margin: 0 0 8px 0; color: var(--accent); font-size: 18px }
+section h3 { margin: 8px 0; color: var(--accent-2); font-size: 14px }
+
+#barchart svg, #artistchart svg, #durhist svg, #genrepie svg, #genreradar svg, #yearhist svg, #timeline svg {
+  background: transparent;
 }
 
 pre { background:#071428; padding:12px; border-radius:6px; color:var(--text); }
 #controls { margin-bottom: 12px }
 #controls select { font-size: 14px; padding:6px; background:transparent; color:var(--text); border:1px solid rgba(255,255,255,0.04); }
 #duration_bins { font-size: 13px; color: var(--muted) }
+
+/* card wrapper utility for sections */
+#overview > div, #genre_bar, #artist_bar, #added_timeline, #year_hist, #summary { padding: 8px }
+#genrepie, #genreradar, #durhist, #barchart, #artistchart, #timeline, #yearhist { padding: 6px }
+
+/* smaller touch-ups */
+button, select { border-radius: 6px }
+
+/* subtle chart transitions */
+svg rect { transition: opacity 240ms ease, transform 240ms ease }
+svg path { transition: opacity 240ms ease, transform 240ms ease }
+svg text { transition: fill 200ms ease }
+
+
 
 /* Axis and text colour overrides for SVGs */
 svg text { fill: var(--text); font-size: 12px }

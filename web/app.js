@@ -1,10 +1,41 @@
 async function loadData() {
-  const res = await fetch('../data/stats.json');
-  const j = await res.json();
-  return j.stats;
+  const [sres, fres] = await Promise.all([fetch('../data/stats.json'), fetch('../data/files.json')]);
+  const s = await sres.json();
+  const f = await fres.json();
+  return { stats: (s.stats || s), files: (f.files || f) };
 }
 
-function renderSummary(stats) {
+// Helpers
+function fileHasGenre(file, genre) {
+  if (!file || !file.genre) return false;
+  const parts = file.genre.split(/[,;/|]+/).map(s=>s.trim()).filter(Boolean);
+  return parts.some(p => p.toLowerCase() === genre.toLowerCase());
+}
+
+function getYearFromFile(file) {
+  if (!file) return null;
+  if (file.date) {
+    const m = file.date.match(/(19|20)\d{2}/);
+    if (m) return +m[0];
+  }
+  if (file.mtime_epoch) return new Date(file.mtime_epoch * 1000).getFullYear();
+  return null;
+}
+
+function getFilteredFiles(files, genre) {
+  if (!files) return [];
+  if (!genre || genre === '__all__') {
+    // default: exclude Unknown/empty genres from charts
+    return files.filter(f => {
+      if (!f.genre) return false;
+      const parts = f.genre.split(/[,;/|]+/).map(s=>s.trim()).filter(Boolean);
+      return !parts.some(p => p.toLowerCase() === 'unknown');
+    });
+  }
+  return (files || []).filter(f => fileHasGenre(f, genre));
+}
+
+function renderSummary(stats, files, selectedGenre) {
   const s = stats.summary;
   const out = [];
   out.push(`Total files found: ${s.total_files_found}`);
@@ -13,12 +44,21 @@ function renderSummary(stats) {
   out.push(`Unique genres: ${s.unique_genres}`);
   out.push(`Unique artists: ${s.unique_artists}`);
   out.push(`Duration stats (mean): ${stats.durations ? (Math.round(stats.durations.mean) + 's') : 'N/A'}`);
+  const unknownCount = stats.genre_counts && stats.genre_counts['Unknown'] ? stats.genre_counts['Unknown'] : 0;
+  out.push(`Unknown-genre files (excluded from charts): ${unknownCount}`);
+
+  if (selectedGenre && selectedGenre !== '__all__') {
+    const filtered = getFilteredFiles(files, selectedGenre);
+    out.push(`\nFiltered: genre=${selectedGenre}, files=${filtered.length}`);
+  }
+
   document.getElementById('summarytext').textContent = out.join('\n');
 }
 
 function populateGenreSelect(stats) {
   const sel = document.getElementById('genre_select');
-  const genres = Object.keys(stats.genre_counts).sort((a,b)=>stats.genre_counts[b]-stats.genre_counts[a]);
+  // exclude 'Unknown' from the selectable genres
+  const genres = Object.keys(stats.genre_counts).filter(g => g.toLowerCase() !== 'unknown').sort((a,b)=>stats.genre_counts[b]-stats.genre_counts[a]);
   genres.forEach(g => {
     const opt = document.createElement('option');
     opt.value = g;
@@ -26,17 +66,7 @@ function populateGenreSelect(stats) {
     sel.appendChild(opt);
   });
   sel.addEventListener('change', e => {
-    const g = e.target.value;
-    if (g === '__all__') {
-      renderGenreBar(stats);
-      renderArtistBar(null, stats);
-      renderDurationDistribution(stats, null);
-      renderGenreRadar(stats, null);
-    } else {
-      renderArtistBar(g, stats);
-      renderDurationDistribution(stats, g);
-      renderGenreRadar(stats, g);
-    }
+    applyGenreFilter(e.target.value);
   });
 }
 
@@ -52,18 +82,31 @@ function renderDurationBins(stats) {
   });
 }
 
-function renderDurationDistribution(stats, genre) {
+function renderDurationDistribution(stats, genre, files) {
   document.getElementById('durhist').innerHTML = '';
-  // If a genre is selected use per-genre stats, else use global bins
+  // If a genre is selected prefer per-genre bins/percentiles; otherwise show global
   let bins = stats.duration_bins || {};
   let percentiles = stats.duration_percentiles || null;
+
+  if (genre && stats.per_genre_duration_bins && stats.per_genre_duration_bins[genre]) {
+    bins = stats.per_genre_duration_bins[genre];
+  }
   if (genre && stats.per_genre_duration_stats && stats.per_genre_duration_stats[genre]) {
-    // approximate bins from per_genre_duration_stats if available
-    const gstat = stats.per_genre_duration_stats[genre];
-    percentiles = gstat ? gstat.percentiles : percentiles;
+    percentiles = stats.per_genre_duration_stats[genre].percentiles;
   }
 
-  const data = Object.entries(bins).map(d=>({label:d[0],count:+d[1]}));
+  // Fallback: compute bins from file durations if files provided
+  if (genre && (!bins || Object.keys(bins).length === 0) && files) {
+    const counts = {};
+    getFilteredFiles(files, genre).forEach(f => {
+      const d = Math.round((f.duration || 0));
+      const label = d < 120 ? '<2m' : d < 240 ? '2-4m' : d < 360 ? '4-6m' : d < 720 ? '6-12m' : '12m+';
+      counts[label] = (counts[label] || 0) + 1;
+    });
+    bins = counts;
+  }
+
+  const data = Object.entries(bins).map(d=>({label:d[0],count:+d[1]})).sort((a,b)=>b.count-a.count);
   const width = 700, height = 260, margin = {top:20,right:20,bottom:40,left:60};
   const svg = d3.select('#durhist').append('svg').attr('width', width).attr('height', height);
 
@@ -101,9 +144,11 @@ function renderDurationDistribution(stats, genre) {
   }
 }
 
-function renderGenreBar(stats) {
+function renderGenreBar(stats, selectedGenre) {
   document.getElementById('barchart').innerHTML = '';
-  const data = Object.entries(stats.genre_counts).sort((a,b)=>b[1]-a[1]).slice(0,20).map(d=>({genre:d[0],count:d[1]}));
+  const data = Object.entries(stats.genre_counts)
+    .filter(([g]) => g.toLowerCase() !== 'unknown')
+    .sort((a,b)=>b[1]-a[1]).slice(0,20).map(d=>({genre:d[0],count:d[1]}));
   const width = 900, height = 400, margin = {top:20,right:20,bottom:100,left:140};
 
   const svg = d3.select('#barchart').append('svg').attr('width', width).attr('height', height);
@@ -115,11 +160,11 @@ function renderGenreBar(stats) {
     .attr('y', d=>y(d.genre))
     .attr('height', y.bandwidth())
     .attr('width', d=>x(d.count)-margin.left)
-    .attr('fill', '#69b3a2')
+    .attr('fill', d => (selectedGenre && selectedGenre === d.genre) ? 'var(--accent-2)' : '#69b3a2')
+    .attr('opacity', d => (!selectedGenre || selectedGenre === d.genre) ? 1 : 0.4)
     .on('click', (event, d) => {
       document.getElementById('genre_select').value = d.genre;
-      renderArtistBar(d.genre, stats);
-      renderDurationDistribution(stats, d.genre);
+      applyGenreFilter(d.genre);
     })
     .append('title').text(d => `${d.genre}: ${d.count}`);
 
@@ -129,14 +174,21 @@ function renderGenreBar(stats) {
   svg.append('g').attr('transform', `translate(0,${height-margin.bottom})`).call(xAxis);
 }
 
-function renderArtistBar(genre, stats) {
+function renderArtistBar(genre, stats, files) {
   document.getElementById('artistchart').innerHTML = '';
   let data = [];
   if (!genre) {
     data = Object.entries(stats.artist_counts).slice(0,20).map(d=>({artist:d[0],count:d[1]}));
   } else {
     const list = stats.top_artists_per_genre && stats.top_artists_per_genre[genre] ? stats.top_artists_per_genre[genre] : [];
-    data = list.map(d=>({artist:d[0],count:d[1]}));
+    if (list && list.length) {
+      data = list.map(d=>({artist:d[0],count:d[1]}));
+    } else if (files) {
+      // fallback: compute artists from file list
+      const counts = {};
+      getFilteredFiles(files, genre).forEach(f => { if (f.artist) counts[f.artist] = (counts[f.artist]||0)+1 });
+      data = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,20).map(d=>({artist:d[0],count:d[1]}));
+    }
   }
   if (!data.length) {
     document.getElementById('artistchart').textContent = 'No data for selected genre';
@@ -161,8 +213,11 @@ function renderArtistBar(genre, stats) {
   svg.append('g').attr('transform', `translate(0,${height-margin.bottom})`).call(xAxis);
 }
 
-function renderYearHistogram(stats) {
-  const entries = Object.entries(stats.year_counts).map(d=>({year:+d[0],count:+d[1]})).sort((a,b)=>a.year-b.year);
+function renderYearHistogramFromFiles(files, selectedGenre) {
+  document.getElementById('yearhist').innerHTML = '';
+  const byYear = {};
+  getFilteredFiles(files, selectedGenre).forEach(f => { const y = getYearFromFile(f); if (y) byYear[y] = (byYear[y]||0)+1 });
+  const entries = Object.entries(byYear).map(d=>({year:+d[0],count:+d[1]})).sort((a,b)=>a.year-b.year);
   if (!entries.length) return;
   const width = 900, height = 200, margin = {top:20,right:20,bottom:40,left:40};
   const svg = d3.select('#yearhist').append('svg').attr('width', width).attr('height', height);
@@ -175,9 +230,11 @@ function renderYearHistogram(stats) {
   svg.append('g').attr('transform', `translate(0,${height-margin.bottom})`).call(d3.axisBottom(x).tickFormat(d3.format('d')));
   svg.append('g').attr('transform', `translate(${margin.left},0)`).call(d3.axisLeft(y));
 }
-
-function renderAddedTimeline(stats) {
-  const entries = Object.entries(stats.added_year_counts || {}).map(d=>({year:+d[0],count:+d[1]})).sort((a,b)=>a.year-b.year);
+function renderAddedTimelineFromFiles(files, selectedGenre) {
+  document.getElementById('timeline').innerHTML = '';
+  const byYear = {};
+  getFilteredFiles(files, selectedGenre).forEach(f => { const y = new Date((f.mtime_epoch||0)*1000).getFullYear(); if (y) byYear[y] = (byYear[y]||0)+1 });
+  const entries = Object.entries(byYear).map(d=>({year:+d[0],count:+d[1]})).sort((a,b)=>a.year-b.year);
   if (!entries.length) return;
   const width = 900, height = 120, margin = {top:10,right:20,bottom:30,left:40};
   const svg = d3.select('#timeline').append('svg').attr('width', width).attr('height', height);
@@ -203,22 +260,42 @@ function renderAddedTimeline(stats) {
 }
 
 (async function main(){
-  const stats = await loadData();
-  renderSummary(stats);
-  populateGenreSelect(stats);
-  renderDurationBins(stats);
-  renderGenreBar(stats);
-  renderArtistBar(null, stats);
-  renderDurationDistribution(stats, null);
-  renderYearHistogram(stats);
-  renderAddedTimeline(stats);
-  renderGenrePie(stats);
-  renderGenreRadar(stats, null);
+  const data = await loadData();
+  window.__MLV = { stats: data.stats, files: data.files, selectedGenre: '__all__' };
+
+  populateGenreSelect(data.stats);
+  renderDurationBins(data.stats);
+
+  // initial render (no filter)
+  applyGenreFilter('__all__');
+
 })();
 
-function renderGenrePie(stats) {
+function applyGenreFilter(selectedGenre) {
+  const stats = window.__MLV.stats;
+  const files = window.__MLV.files;
+  window.__MLV.selectedGenre = selectedGenre;
+
+  // keep select UI in sync
+  const sel = document.getElementById('genre_select');
+  if (sel) sel.value = selectedGenre || '__all__';
+
+  renderSummary(stats, files, selectedGenre);
+  renderDurationBins(stats);
+  renderGenreBar(stats, selectedGenre);
+  renderGenrePie(stats, selectedGenre);
+  renderArtistBar(selectedGenre === '__all__' ? null : selectedGenre, stats, files);
+  renderDurationDistribution(stats, selectedGenre === '__all__' ? null : selectedGenre, files);
+  renderYearHistogramFromFiles(files, selectedGenre);
+  renderAddedTimelineFromFiles(files, selectedGenre);
+  renderGenreRadar(stats, selectedGenre === '__all__' ? null : selectedGenre);
+}
+
+function renderGenrePie(stats, selectedGenre) {
   document.getElementById('genrepie').innerHTML = '';
-  const data = Object.entries(stats.genre_counts).map(d=>({genre:d[0],count:d[1],pct:stats.genre_percentages[d[0]]})).sort((a,b)=>b.count-a.count).slice(0,30);
+  const data = Object.entries(stats.genre_counts)
+    .filter(([g]) => g.toLowerCase() !== 'unknown')
+    .map(d=>({genre:d[0],count:d[1],pct:stats.genre_percentages[d[0]]})).sort((a,b)=>b.count-a.count).slice(0,30);
   const width = 360, height = 360, radius = Math.min(width, height)/2 - 10;
   const svg = d3.select('#genrepie').append('svg').attr('width', width).attr('height', height).append('g').attr('transform', `translate(${width/2},${height/2})`);
 
@@ -235,9 +312,7 @@ function renderGenrePie(stats) {
     .each(function(d){ this._current = {startAngle: 0, endAngle: 0}; })
     .on('click', (event, d)=>{
       document.getElementById('genre_select').value = d.data.genre;
-      renderArtistBar(d.data.genre, stats);
-      renderDurationDistribution(stats, d.data.genre);
-      renderGenreRadar(stats, d.data.genre);
+      applyGenreFilter(d.data.genre);
     })
     .append('title').text(d=>`${d.data.genre}: ${d.data.count}`);
 
@@ -280,6 +355,10 @@ function renderGenrePie(stats) {
 
   // subtle entrance animation for pie group
   svg.style('opacity',0).transition().duration(600).style('opacity',1);
+  // if a genre is selected, dim other slices
+  if (selectedGenre && selectedGenre !== '__all__') {
+    svg.selectAll('path').attr('opacity', d=> d.data.genre === selectedGenre ? 1 : 0.25);
+  }
 }
 
 function renderGenreRadar(stats, highlightGenre) {
