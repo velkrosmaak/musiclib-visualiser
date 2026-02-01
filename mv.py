@@ -21,6 +21,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 import statistics
+import numpy as np
 from tqdm import tqdm
 
 from mutagen import File as MutagenFile
@@ -60,6 +61,8 @@ def extract_metadata(path):
         duration = getattr(info, 'length', None)
         bitrate = getattr(info, 'bitrate', None)
 
+        mtime_epoch = os.path.getmtime(path)
+        mtime_iso = datetime.fromtimestamp(mtime_epoch).isoformat()
         return {
             'path': path,
             'title': title,
@@ -69,6 +72,8 @@ def extract_metadata(path):
             'date': date,
             'duration': float(duration) if duration is not None else None,
             'bitrate': int(bitrate) if bitrate is not None else None,
+            'mtime': mtime_iso,
+            'mtime_epoch': float(mtime_epoch),
         }
     except Exception as e:
         # Avoid noisy exceptions per-file — caller will count failures
@@ -173,17 +178,54 @@ def analyze(metadata_list):
     def numeric_stats(arr):
         if not arr:
             return None
+        a = list(arr)
+        pct = None
+        try:
+            # use numpy for robust percentile calc
+            pct = {
+                'p25': float(np.percentile(a, 25)),
+                'p50': float(np.percentile(a, 50)),
+                'p75': float(np.percentile(a, 75)),
+                'p90': float(np.percentile(a, 90)),
+            }
+        except Exception:
+            pct = {
+                'p25': None,
+                'p50': statistics.median(a) if a else None,
+                'p75': None,
+                'p90': None,
+            }
         return {
-            'count': len(arr),
-            'sum': sum(arr),
-            'mean': statistics.mean(arr),
-            'median': statistics.median(arr),
-            'min': min(arr),
-            'max': max(arr),
-            'stdev': statistics.stdev(arr) if len(arr) > 1 else 0.0,
+            'count': len(a),
+            'sum': sum(a),
+            'mean': statistics.mean(a),
+            'median': statistics.median(a),
+            'min': min(a),
+            'max': max(a),
+            'stdev': statistics.stdev(a) if len(a) > 1 else 0.0,
+            'percentiles': pct,
         }
 
+    # additional stats: file age and added-years
+    ages_days = []
+    added_year_counter = Counter()
+    for m in metadata_list:
+        me = m.get('mtime_epoch') if m and isinstance(m, dict) else None
+        if me:
+            ages_days.append((datetime.now().timestamp() - me) / 86400.0)
+            yr = datetime.fromtimestamp(me).year
+            added_year_counter[yr] += 1
+
     per_genre_stats = {g: numeric_stats(v) for g, v in per_genre_durations.items()}
+
+    # genre percentages and entropy
+    total_genre_counts = sum(genre_counter.values()) or 1
+    genre_percentages = {g: (c / total_genre_counts) for g, c in genre_counter.items()}
+    import math
+    genre_entropy = -sum((p * math.log2(p)) for p in genre_percentages.values() if p > 0)
+    top_genre_share = 0.0
+    if genre_counter:
+        top_genre_share = next(iter(genre_counter.most_common(1)))[1] / total_genre_counts
 
     stats['summary'] = {
         'total_files_found': total,
@@ -192,15 +234,20 @@ def analyze(metadata_list):
         'unique_genres': len(genre_counter),
         'unique_artists': len(artist_counter),
         'unique_albums': len(album_counter),
+        'genre_entropy': genre_entropy,
+        'top_genre_share': top_genre_share,
     }
 
     stats['top_genres'] = genre_counter.most_common(30)
     stats['least_common_genres'] = genre_counter.most_common()[:-31:-1]
     stats['genre_counts'] = dict(genre_counter)
+    stats['genre_percentages'] = genre_percentages
     stats['artist_counts'] = dict(artist_counter.most_common(200))
     stats['album_counts'] = dict(album_counter.most_common(200))
     stats['year_counts'] = dict(year_counter)
+    stats['added_year_counts'] = dict(added_year_counter)
     stats['durations'] = numeric_stats(durations)
+    stats['duration_percentiles'] = stats['durations']['percentiles'] if stats['durations'] else None
     stats['per_genre_duration_stats'] = per_genre_stats
 
     # top artists per genre
@@ -209,6 +256,9 @@ def analyze(metadata_list):
     # duration bins
     stats['duration_bins'] = dict(duration_bin_counts)
     stats['per_genre_duration_bins'] = { g: dict(per_genre_duration_bins[g]) for g in per_genre_duration_bins }
+
+    # age stats
+    stats['age_days'] = numeric_stats(ages_days)
 
     # cooccurrence as list
     stats['genre_cooccurrence'] = [ { 'pair': list(k), 'count': v } for k, v in cooccurrence.items() ]
